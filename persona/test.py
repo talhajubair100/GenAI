@@ -20,6 +20,15 @@ client = OpenAI(
 def run_command(command):
     result = os.system(command=command)
     return result
+
+available_tools = {
+    "run_command": {
+        "fn": run_command,
+        "description": "Takes a command as input to execute on system and returns output.",
+    },
+}
+
+
 # Salman Khan persona definition
 PERSONAS = {
     "salman": {
@@ -27,11 +36,7 @@ PERSONAS = {
         "description": "Bollywood's Bhaijaan - superstar with swag and attitude",
         "traits": "Speaks in Hinglish (Hindi+English mix), uses signature phrases like 'Being Human', 'Bhaijaan', 'Dabangg style'",
         "greeting": "Swagat nahi karoge hamara? Bhaijaan is here to help you! Kya problem hai batao?",
-    },
-    "run_command": {
-        "fn": run_command,
-        "description": "Takes a command as input to execute on system and returns output.",
-    },
+    }
 }
 
 
@@ -41,43 +46,46 @@ def get_system_prompt(persona_key):
 
     return f"""
 You are now embodying the persona of {persona['name']}, {persona['description']}.
-Takes a command as input to execute on system and returns output {persona['run_command']}.
 You must respond EXACTLY like Salman Khan would - with his signature style and phrases.
 
 Key Rules:
+Follow the Output JSON Format.
 1. Language: Use Hinglish (70% Hindi, 30% English) with Roman script
 2. Style: Very casual, friendly but with swag
 3. Signature phrases: Use 'Bhai', 'Bhaijaan', 'Being Human', 'Dabangg style', 'Ek Tha Tiger' etc.
 4. Attitude: Confident but helpful, like Salman's on-screen persona
 
-Output Format:
-{{ step: "string", content: "string" }}
+ Output JSON Format:
+    {{
+        "step": "string",
+        "content": "string",
+        "function": "The name of function if the step is action",
+        "input": "The input parameter for the function",
+    }}
+
+WHEN TO USE TOOLS:
+- ONLY use run_command when you need to execute a system command
+- For general knowledge questions, just answer directly with plan → output
+- NEVER try to run a command for things like capitals, math problems, or general facts
+
 
 Available Tools:
  - run_command: Takes a command as input to execute on sustem and returns output.
 
-Example:
-Input: What's 2 + 2?
-{{
-    "step": "analyse",
-    "content": "Arre bhai, yeh to basic sawaal hai! Maths ka funda samajh raha hoon main"
-}}
-{{
-    "step": "think",
-    "content": "Dabangg style mein sochta hoon... ek aur ek mila ke... hmm..."
-}}
-{{
-    "step": "output",
-    "content": "Char ho jayega na bhai!"
-}}
-{{
-    "step": "validate",
-    "content": "Haan haan, bilkul sahi hai... Being Human calculator bhi yahi kehta hai"
-}}
-{{
-    "step": "result",
-    "content": "Final answer - 2 + 2 = 4, aur yeh hai ekdum 'Tiger Zinda Hai' style mein!"
-}}
+
+Example 1 (Direct answer without using tools):
+User Query: What is the 2 + 2?
+Output: {{ "step": "plan", "content": "Arre bhai, yeh to basic sawaal hai! Maths ka funda samajh raha hoon main" }}
+\Output: {{ "step": "output", "content": "Final answer - 2 + 2 = 4, aur yeh hai ekdum 'Tiger Zinda Hai' style mein!" }}
+
+Example 2 (Using tools for a command):
+User Query: Show me files in current directory
+Output: {{ "step": "plan", "content": "Arre bhai, yeh to basic sawaal hai! Maths ka funda samajh raha hoon main" }}
+Output: {{ "step": "action", "function": "run_command", "input": "ls -la" }}
+Output: {{ "step": "observe", "output": "Char ho jayega na bhai!" }}
+Output: {{ "step": "output", "content": "Final answer - 2 + 2 = 4, aur yeh hai ekdum 'Tiger Zinda Hai' style mein!" }}
+
+
 
 Important: Never break character! Always respond like Salman Khan in Hinglish.
 """
@@ -106,39 +114,23 @@ while True:
             messages=messages,
             temperature=0.8,
         )
-    
-        try:
-            parsed_response = json.loads(response.choices[0].message.content)
-            
-            # Handle list responses
-            if isinstance(parsed_response, list):
-                # Add the response to messages
-                messages.append({"role": "assistant", "content": json.dumps(parsed_response)})
-                
-                # Process each step
-                for item in parsed_response:
-                    step = item.get("step")
-                    content = item.get("content")
-                    
-                    if step == "result":
-                        print(f"🤖: {content}")
-                        break
-                    else:
-                        print(f"🧠: {content}")
-                break  # Exit inner loop after processing all steps
-                
-            # Handle dictionary responses
-            else:
-                messages.append({"role": "assistant", "content": json.dumps(parsed_response)})
-                
-                if parsed_response.get("step") != "result":
-                    print(f"🧠: {parsed_response.get('content')}")
-                    continue
-                
-                print(f"🤖: {parsed_response.get('content')}")
-                break
-                
-        except Exception as e:
-            print(f"Error processing response: {e}")
-            print(f"Raw response: {response.choices[0].message.content}")
+        
+        parsed_output = json.loads(response.choices[0].message.content)
+        messages.append({ 'role': 'assistant', 'content': json.dumps(parsed_output) })
+
+        if parsed_output['step'] == 'plan':
+            print(f"🧠: {parsed_output.get('content')}")
+            continue
+        
+        if parsed_output['step'] == 'action':
+            tool_name = parsed_output.get('function')
+            tool_input = parsed_output.get('input')
+
+            if available_tools.get(tool_name, False) != False:
+                output = available_tools[tool_name].get('fn')(tool_input)
+                messages.append({ 'role': 'assistant', 'content': json.dumps({ 'step': 'observe', 'output': output }) })
+                continue
+
+        if parsed_output['step'] == 'output':
+            print(f"🤖: {parsed_output.get('content')}")
             break
